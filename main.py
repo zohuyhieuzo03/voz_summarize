@@ -3,6 +3,16 @@ from bs4 import BeautifulSoup
 from tqdm import tqdm
 from datetime import datetime
 import sys
+import google.generativeai as genai
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Configure Gemini API
+genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
+model = genai.GenerativeModel('gemini-2.0-flash')
 
 def get_total_pages(soup):
     # Find all page numbers
@@ -92,11 +102,70 @@ def get_top_comments(url, num_comments=5):
 
     return news_content, top_comments
 
+def analyze_content_with_gemini(news_content, comments):
+    """
+    Analyze content and comments using Gemini AI
+    """
+    prompt = """Hãy phân tích nội dung của bài báo dưới đây và kết hợp với các bình luận của độc giả để đưa ra một bản tóm tắt và phân tích đa chiều.
+
+Tóm tắt ý chính của bài báo (nội dung, lập luận, kết luận).
+
+Nhận diện các quan điểm chính từ phần bình luận (đồng tình, phản biện, bổ sung, quan sát mới).
+
+So sánh giữa quan điểm của tác giả và của người đọc, chỉ ra các điểm tương đồng, khác biệt hoặc mâu thuẫn nếu có.
+
+Cuối cùng, đưa ra một nhận định tổng quan về chủ đề đang được thảo luận.
+
+Dưới đây là nội dung bài báo và bình luận:
+
+Nội dung bài báo:
+{news_content}
+
+Các bình luận:
+{comments}
+"""
+
+    try:
+        response = model.generate_content(prompt.format(
+            news_content=news_content,
+            comments="\n".join([f"Bình luận {i+1} ({c['reacts']} reacts): {c['text']}" for i, c in enumerate(comments)])
+        ))
+        return response.text
+    except Exception as e:
+        return f"Error analyzing content with Gemini: {str(e)}"
+
 def process_single_post(url):
     """Process a single VOZ post URL"""
     try:
         news_content, top_comments = get_top_comments(url, num_comments=5)
         
+        # Get AI analysis
+        ai_analysis = analyze_content_with_gemini(news_content, top_comments)
+        
+        # Create output file with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = f"voz_single_post_{timestamp}.txt"
+        
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(f"News Content from {url}:\n")
+            f.write("-" * 80 + "\n")
+            f.write(news_content if news_content else "No news content found")
+            f.write("\n" + "-" * 80 + "\n")
+            
+            f.write("\nTop 5 Comments:\n")
+            f.write("-" * 80 + "\n")
+            for i, comment in enumerate(top_comments, 1):
+                f.write(f"\n{i}. Reacts: {comment['reacts']}\n")
+                f.write(f"Comment: {comment['text']}\n")
+                f.write(f"Link: {comment['link']}\n")
+                f.write("-" * 40 + "\n")
+            
+            f.write("\nAI Analysis:\n")
+            f.write("-" * 80 + "\n")
+            f.write(ai_analysis)
+            f.write("\n" + "-" * 80 + "\n")
+        
+        # Also print to console
         print(f"\nNews Content from {url}:")
         print("-" * 80)
         print(news_content if news_content else "No news content found")
@@ -109,6 +178,13 @@ def process_single_post(url):
             print(f"Comment: {comment['text']}")
             print(f"Link: {comment['link']}")
             print("-" * 40)
+        
+        print("\nAI Analysis:")
+        print("-" * 80)
+        print(ai_analysis)
+        print("-" * 80)
+            
+        print(f"\nResults have been saved to {output_file}")
     except Exception as e:
         print(f"Error processing URL: {e}")
 
@@ -153,6 +229,9 @@ def process_trending_posts():
                     replies = "0"
 
                 news_content, top_comments = get_top_comments(link, num_comments=4)
+                
+                # Get AI analysis
+                ai_analysis = analyze_content_with_gemini(news_content, top_comments)
 
                 f.write(f"🔥 Title: {title}\n")
                 f.write(f"Link: {link}\n")
@@ -164,7 +243,10 @@ def process_trending_posts():
                     f.write(f"\n{i}. Reacts: {comment['reacts']}\n")
                     f.write(f"Comment: {comment['text']}\n")
                     f.write(f"Link: {comment['link']}\n")
+                f.write("\nAI Analysis:\n")
                 f.write("-" * 80 + "\n")
+                f.write(ai_analysis)
+                f.write("\n" + "-" * 80 + "\n")
         else:
             f.write("Không tìm thấy trending content!\n")
 
