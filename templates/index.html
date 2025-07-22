@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>VOZ News List</title>
+</head>
+<body>
+    <h1>Danh sách bài báo VOZ</h1>
+    <form method="post" action="{{ url_for('add_news') }}" style="margin-bottom: 2em;" id="add-news-form" onsubmit="submitAddNews(event)">
+        <input type="url" name="news_url" id="news_url" placeholder="Dán link bài báo VOZ..." required style="width:350px;padding:8px 12px;border-radius:6px;border:1px solid #ccc;">
+        <button id="add-news-btn" type="submit" style="padding:8px 18px;border-radius:6px;background:#2196f3;color:#fff;border:none;font-weight:bold;">Thêm & Phân tích</button>
+        <span id="loading-spinner" style="display:none;margin-left:10px;vertical-align:middle;">
+            <svg width="22" height="22" viewBox="0 0 44 44" xmlns="http://www.w3.org/2000/svg" stroke="#2196f3">
+                <g fill="none" fill-rule="evenodd" stroke-width="4">
+                    <circle cx="22" cy="22" r="18" stroke-opacity=".3"/>
+                    <path d="M40 22c0-9.94-8.06-18-18-18">
+                        <animateTransform attributeName="transform" type="rotate" from="0 22 22" to="360 22 22" dur="1s" repeatCount="indefinite"/>
+                    </path>
+                </g>
+            </svg>
+        </span>
+    </form>
+    <div id="progress-bar-container" style="display:none;margin-bottom:1em;max-width:400px;">
+        <div style="background:#eee;border-radius:6px;height:18px;width:100%;overflow:hidden;">
+            <div id="progress-bar" style="background:#2196f3;height:100%;width:0%;transition:width 0.3s;"></div>
+        </div>
+        <div id="progress-text" style="margin-top:4px;font-size:0.98em;color:#555;text-align:right;"></div>
+    </div>
+    <script>
+    function submitAddNews(e) {
+        e.preventDefault();
+        var url = document.getElementById('news_url').value;
+        var btn = document.getElementById('add-news-btn');
+        var spinner = document.getElementById('loading-spinner');
+        var progressBar = document.getElementById('progress-bar');
+        var progressText = document.getElementById('progress-text');
+        var progressContainer = document.getElementById('progress-bar-container');
+        btn.disabled = true;
+        btn.innerText = 'Đang xử lý...';
+        spinner.style.display = 'inline-block';
+        progressBar.style.width = '0%';
+        progressText.innerText = '';
+        progressContainer.style.display = 'block';
+        fetch("{{ url_for('add_news') }}", {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'news_url=' + encodeURIComponent(url)
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.task_id) {
+                pollProgress(data.task_id);
+            } else {
+                alert(data.error || 'Có lỗi xảy ra!');
+                btn.disabled = false;
+                btn.innerText = 'Thêm & Phân tích';
+                spinner.style.display = 'none';
+                progressContainer.style.display = 'none';
+            }
+        });
+    }
+    function pollProgress(task_id) {
+        var progressBar = document.getElementById('progress-bar');
+        var progressText = document.getElementById('progress-text');
+        var btn = document.getElementById('add-news-btn');
+        var spinner = document.getElementById('loading-spinner');
+        var progressContainer = document.getElementById('progress-bar-container');
+        fetch('/progress/' + task_id)
+            .then(res => res.json())
+            .then(data => {
+                if (data.error) {
+                    progressText.innerText = 'Có lỗi xảy ra!';
+                    btn.disabled = false;
+                    btn.innerText = 'Thêm & Phân tích';
+                    spinner.style.display = 'none';
+                    progressContainer.style.display = 'none';
+                    return;
+                }
+                var percent = data.total > 0 ? Math.round(data.current / data.total * 100) : 0;
+                progressBar.style.width = percent + '%';
+                progressText.innerText = `Đã đọc ${data.current}/${data.total} trang...`;
+                if (data.done) {
+                    progressText.innerText = 'Hoàn tất!';
+                    setTimeout(() => { window.location.reload(); }, 800);
+                } else {
+                    setTimeout(() => pollProgress(task_id), 500);
+                }
+            })
+            .catch(() => {
+                progressText.innerText = 'Có lỗi xảy ra!';
+                btn.disabled = false;
+                btn.innerText = 'Thêm & Phân tích';
+                spinner.style.display = 'none';
+                progressContainer.style.display = 'none';
+            });
+    }
+    </script>
+    <ul>
+        {% for news in news_list %}
+        <li>
+            <a href="{{ url_for('news_detail', news_id=news.id) }}">{{ news.title or news.url }}</a>
+            <br>
+            <small>{{ news.created_at.strftime('%Y-%m-%d %H:%M') }}</small>
+        </li>
+        {% else %}
+        <li>Chưa có bài báo nào.</li>
+        {% endfor %}
+    </ul>
+</body>
+</html> 

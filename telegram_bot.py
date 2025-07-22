@@ -58,10 +58,23 @@ async def handle_voz_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 main_content = parts[0].strip()
                 ai_analysis = parts[1].strip() if len(parts) > 1 else ""
                 
-                # Send main content
-                main_chunks = [main_content[i:i+4000] for i in range(0, len(main_content), 4000)]
-                for chunk in main_chunks:
+                # Split main content into news content and comments
+                news_parts = main_content.split("Comments:")
+                news_content = news_parts[0].strip()
+                comments = news_parts[1].strip() if len(news_parts) > 1 else ""
+                
+                # Send news content
+                await update.message.reply_text("📰 Nội dung bài viết:")
+                news_chunks = [news_content[i:i+4000] for i in range(0, len(news_content), 4000)]
+                for chunk in news_chunks:
                     await update.message.reply_text(chunk)
+                
+                # Send comments
+                if comments:
+                    await update.message.reply_text("💬 Các bình luận nổi bật:")
+                    comment_chunks = [comments[i:i+4000] for i in range(0, len(comments), 4000)]
+                    for chunk in comment_chunks:
+                        await update.message.reply_text(chunk)
                 
                 # Send AI analysis as a separate message
                 if ai_analysis:
