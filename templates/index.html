@@ -3,9 +3,122 @@
 <head>
     <meta charset="UTF-8">
     <title>VOZ News List</title>
+    <style>
+#thread-columns {
+  display: flex;
+  gap: 32px;
+  align-items: flex-start;
+}
+#thread-list-section, #processed-list-section {
+  flex: 1 1 0;
+  background: #fafbfc;
+  border-radius: 8px;
+  padding: 16px 20px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  min-width: 320px;
+}
+#thread-list-section h2, #processed-list-section h2 {
+  margin-top: 0;
+  font-size: 1.2em;
+  color: #1a237e;
+}
+#thread-list, #processed-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+#thread-list li, #processed-list li {
+  margin-bottom: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid #eee;
+}
+@media (max-width: 900px) {
+  #thread-columns { flex-direction: column; }
+}
+
+/* Styling for thread list HTML */
+#thread-list-html .structItem {
+  background: white;
+  border: 1px solid #e1e5e9;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  padding: 12px;
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+#thread-list-html .structItem-title a {
+  color: #1a73e8;
+  text-decoration: none;
+  font-weight: 500;
+  font-size: 14px;
+  line-height: 1.4;
+}
+#thread-list-html .structItem-title a:hover {
+  text-decoration: underline;
+}
+#thread-list-html .structItem-parts {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0 0 0;
+  font-size: 12px;
+  color: #666;
+}
+#thread-list-html .structItem-parts li {
+  display: inline;
+  margin-right: 8px;
+}
+#thread-list-html .structItem-parts a {
+  color: #666;
+  text-decoration: none;
+}
+#thread-list-html .structItem-parts a:hover {
+  text-decoration: underline;
+}
+#thread-list-html .structItem-cell--meta {
+  text-align: right;
+  min-width: 80px;
+}
+#thread-list-html .pairs {
+  margin: 0;
+  font-size: 12px;
+  color: #666;
+}
+#thread-list-html .pairs dt {
+  font-weight: normal;
+}
+#thread-list-html .pairs dd {
+  font-weight: 500;
+  color: #333;
+}
+#thread-list-html .structItem-cell--main {
+  flex: 1;
+}
+#thread-list-html .structItem-cell--icon {
+  flex-shrink: 0;
+}
+#thread-list-html .avatar img {
+  border-radius: 4px;
+}
+</style>
 </head>
 <body>
     <h1>Danh sách bài báo VOZ</h1>
+    
+    <!-- Today's Statistics -->
+    <div id="today-stats" style="margin-bottom: 1em; padding: 12px; background: #f8f9fa; border-radius: 6px; border-left: 4px solid #28a745;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <strong>Hôm nay đã xử lý:</strong> 
+                <span id="today-count">0</span> bài báo
+            </div>
+            <div>
+                <strong>⏱️ Thời gian đọc:</strong> 
+                <span id="reading-time-display">0 phút</span>
+            </div>
+        </div>
+    </div>
+    
     <form method="post" action="{{ url_for('add_news') }}" style="margin-bottom: 2em;" id="add-news-form" onsubmit="submitAddNews(event)">
         <input type="url" name="news_url" id="news_url" placeholder="Dán link bài báo VOZ..." required style="width:350px;padding:8px 12px;border-radius:6px;border:1px solid #ccc;">
         <button id="add-news-btn" type="submit" style="padding:8px 18px;border-radius:6px;background:#2196f3;color:#fff;border:none;font-weight:bold;">Thêm & Phân tích</button>
@@ -25,6 +138,26 @@
             <div id="progress-bar" style="background:#2196f3;height:100%;width:0%;transition:width 0.3s;"></div>
         </div>
         <div id="progress-text" style="margin-top:4px;font-size:0.98em;color:#555;text-align:right;"></div>
+    </div>
+    <div id="thread-columns">
+      <div id="thread-list-section">
+        <h2>Thread mới (chưa crawl)</h2>
+        <div id="thread-list-loading" style="display:none;">Đang tải danh sách thread...</div>
+        <div id="thread-list-html"></div>
+      </div>
+      <div id="processed-list-section">
+        <h2>Đã xử lý</h2>
+        <ul id="processed-list">
+          {% for news in news_list %}
+            <li>
+              <a href="{{ url_for('news_detail', news_id=news.id) }}"><b>{{ news.title }}</b></a>
+              <span style="color:#888;font-size:0.95em;">({{ news.created_at.strftime('%d/%m/%Y %H:%M') }})</span>
+            </li>
+          {% else %}
+            <li>Chưa có bài nào được xử lý.</li>
+          {% endfor %}
+        </ul>
+      </div>
     </div>
     <script>
     function submitAddNews(e) {
@@ -94,17 +227,187 @@
                 progressContainer.style.display = 'none';
             });
     }
+    async function fetchThreads() {
+      document.getElementById('thread-list-loading').style.display = '';
+      const res = await fetch('/api/threads');
+      const html = await res.text();
+      document.getElementById('thread-list-loading').style.display = 'none';
+      document.getElementById('thread-list-html').innerHTML = html || '<div>Không có thread mới nào.</div>';
+      
+      // Add click handlers to thread titles
+      const threadLinks = document.querySelectorAll('#thread-list-html .structItem-title a');
+      threadLinks.forEach(link => {
+        link.addEventListener('click', async (e) => {
+          e.preventDefault();
+          // Get the original href attribute (relative path) and convert to full Voz URL
+          const relativePath = link.getAttribute('href');
+          const url = 'https://voz.vn' + relativePath;
+          const originalText = link.textContent;
+          
+          // Check if this thread is already processed
+          const threadItem = link.closest('.structItem');
+          const processedIndicator = threadItem.querySelector('div[style*="background: #4caf50"]');
+          
+          if (processedIndicator) {
+            // Thread is already processed, find the news in database and redirect
+            try {
+              const response = await fetch(`/api/find-news?url=${encodeURIComponent(url)}`);
+              const data = await response.json();
+              
+              if (data.news_id) {
+                // Redirect to the processed news detail page
+                window.location.href = `/news/${data.news_id}`;
+              } else {
+                alert('Không tìm thấy bài báo đã xử lý!');
+              }
+            } catch (error) {
+              console.error('Error finding processed news:', error);
+              alert('Có lỗi khi tìm bài báo đã xử lý!');
+            }
+            return;
+          }
+          
+          // Thread is not processed, proceed with processing
+          // Create progress container for this link
+          const progressContainer = document.createElement('div');
+          progressContainer.style.cssText = 'margin-top: 8px; max-width: 200px;';
+          progressContainer.innerHTML = `
+            <div style="background:#eee;border-radius:4px;height:6px;width:100%;overflow:hidden;">
+              <div class="link-progress-bar" style="background:#2196f3;height:100%;width:0%;transition:width 0.3s;"></div>
+            </div>
+            <div class="link-progress-text" style="margin-top:2px;font-size:11px;color:#666;"></div>
+          `;
+          
+          // Insert progress bar after the link
+          link.parentNode.insertBefore(progressContainer, link.nextSibling);
+          
+          // Show loading state
+          link.textContent = 'Đang xử lý...';
+          link.style.color = '#666';
+          link.style.pointerEvents = 'none';
+          console.log(url)
+          
+          try {
+            const formData = new FormData();
+            formData.append('news_url', url);
+            const resp = await fetch('/add_news', {method: 'POST', body: formData});
+            
+            if (resp.ok) {
+              const data = await resp.json();
+              if (data.task_id) {
+                // Start polling progress for this specific link
+                pollLinkProgress(data.task_id, progressContainer, link);
+              } else {
+                link.textContent = 'Lỗi!';
+                link.style.color = '#f44336';
+                link.style.pointerEvents = 'auto';
+                progressContainer.remove();
+              }
+            } else {
+              link.textContent = 'Lỗi!';
+              link.style.color = '#f44336';
+              link.style.pointerEvents = 'auto';
+              progressContainer.remove();
+            }
+          } catch (error) {
+            link.textContent = 'Lỗi!';
+            link.style.color = '#f44336';
+            link.style.pointerEvents = 'auto';
+            progressContainer.remove();
+          }
+        });
+      });
+    }
+    
+    function pollLinkProgress(task_id, progressContainer, link) {
+        const progressBar = progressContainer.querySelector('.link-progress-bar');
+        const progressText = progressContainer.querySelector('.link-progress-text');
+        
+        fetch('/progress/' + task_id)
+            .then(res => res.json())
+            .then(data => {
+                if (data.error) {
+                    progressText.innerText = 'Có lỗi xảy ra!';
+                    link.textContent = 'Lỗi!';
+                    link.style.color = '#f44336';
+                    link.style.pointerEvents = 'auto';
+                    progressContainer.remove();
+                    return;
+                }
+                
+                var percent = data.total > 0 ? Math.round(data.current / data.total * 100) : 0;
+                progressBar.style.width = percent + '%';
+                progressText.innerText = `${data.current}/${data.total} trang`;
+                
+                if (data.done) {
+                    progressText.innerText = 'Hoàn tất!';
+                    link.textContent = 'Đã xử lý!';
+                    link.style.color = '#4caf50';
+                    // Fade out the entire thread item
+                    link.closest('.structItem').style.opacity = '0.5';
+                    // Remove progress bar after a delay
+                    setTimeout(() => {
+                        progressContainer.remove();
+                    }, 2000);
+                    
+                    // Refresh the processed list on the right
+                    refreshProcessedList();
+                } else {
+                    setTimeout(() => pollLinkProgress(task_id, progressContainer, link), 500);
+                }
+            })
+            .catch(() => {
+                progressText.innerText = 'Có lỗi xảy ra!';
+                link.textContent = 'Lỗi!';
+                link.style.color = '#f44336';
+                link.style.pointerEvents = 'auto';
+                progressContainer.remove();
+            });
+    }
+    
+    async function refreshProcessedList() {
+        try {
+            const response = await fetch('/api/processed-news');
+            const html = await response.text();
+            document.getElementById('processed-list').innerHTML = html;
+            
+            // Also refresh the thread list to update processed indicators
+            await fetchThreads();
+            
+            // Update today's statistics
+            await updateTodayStats();
+        } catch (error) {
+            console.error('Error refreshing processed list:', error);
+        }
+    }
+    
+    async function updateTodayStats() {
+        try {
+            const response = await fetch('/api/today-stats');
+            const data = await response.json();
+            
+            document.getElementById('today-count').textContent = data.today_count;
+            
+            // Format reading time display
+            let readingTimeText = '';
+            if (data.total_reading_hours > 0) {
+                readingTimeText = `${data.total_reading_hours} giờ ${data.total_reading_minutes % 60} phút`;
+            } else if (data.total_reading_minutes > 0) {
+                readingTimeText = `${data.total_reading_minutes} phút`;
+            } else {
+                readingTimeText = `${data.total_reading_seconds} giây`;
+            }
+            
+            document.getElementById('reading-time-display').textContent = readingTimeText;
+        } catch (error) {
+            console.error('Error updating today stats:', error);
+        }
+    }
+    
+    window.addEventListener('DOMContentLoaded', () => {
+        fetchThreads();
+        updateTodayStats();
+    });
     </script>
-    <ul>
-        {% for news in news_list %}
-        <li>
-            <a href="{{ url_for('news_detail', news_id=news.id) }}">{{ news.title or news.url }}</a>
-            <br>
-            <small>{{ news.created_at.strftime('%Y-%m-%d %H:%M') }}</small>
-        </li>
-        {% else %}
-        <li>Chưa có bài báo nào.</li>
-        {% endfor %}
-    </ul>
 </body>
 </html> 

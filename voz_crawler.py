@@ -109,6 +109,8 @@ def get_top_comments(url, num_comments=5, progress_callback=None):
                                     img["src"] = unquote(qs["url"][0])
                             elif src.startswith("/attachments/"):
                                 img["src"] = "https://voz.vn" + src
+                    for img in soup2.find_all("img"):
+                        img["style"] = "max-width:400px; height:auto;"  # hoặc img["width"] = "400"
                     content = str(soup2)
                     comment = {
                         "reacts": react_count,
@@ -178,11 +180,15 @@ def process_trending_posts(db, News, Comment, AIAnalysis, flask_app):
 
 def save_news_to_db(url, title, news_content, comments, ai_analysis, db, News, Comment, AIAnalysis, flask_app):
     with flask_app.app_context():
+        print(f"DEBUG: Saving URL to DB: {url}")
         news = News.query.filter_by(url=url).first()
         if not news:
             news = News(url=url, title=title, content=news_content)
             db.session.add(news)
             db.session.commit()
+            print(f"DEBUG: Created new news entry with URL: {url}")
+        else:
+            print(f"DEBUG: Found existing news entry with URL: {url}")
         Comment.query.filter_by(news_id=news.id).delete()
         for c in comments:
             comment = Comment(
@@ -207,4 +213,138 @@ def is_positive_comment(reaction_ul):
         return True
     if first_title == "Gạch":
         return False
-    return None 
+    return None
+
+def get_forum_threads(News, db, flask_app=None):
+    url = "https://voz.vn/f/%C4%90iem-bao.33/"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"}
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+    list_threads = soup.find("div", class_="js-threadList")
+    
+    if list_threads:
+        # Get all processed URLs from database
+        processed_urls = set()
+        if flask_app:
+            with flask_app.app_context():
+                processed_news = News.query.all()
+                for news in processed_news:
+                    processed_urls.add(news.url)
+                print(f"DEBUG: Processed URLs in DB: {processed_urls}")
+        
+        # Debug: Print the HTML structure to see what we're working with
+        print(f"DEBUG: HTML structure preview: {str(list_threads)[:500]}...")
+        
+        # Try different selectors to find thread items
+        thread_items = list_threads.find_all("li", class_="structItem")
+        if not thread_items:
+            thread_items = list_threads.find_all("div", class_="structItem")
+        if not thread_items:
+            thread_items = list_threads.find_all("article", class_="structItem")
+        if not thread_items:
+            thread_items = list_threads.find_all("div", class_="structItem--thread")
+        if not thread_items:
+            thread_items = list_threads.find_all("li")  # Any li elements
+        if not thread_items:
+            thread_items = list_threads.find_all("div")  # Any div elements
+            
+        print(f"DEBUG: Found {len(thread_items)} thread items")
+        if thread_items:
+            print(f"DEBUG: First item classes: {thread_items[0].get('class', [])}")
+            print(f"DEBUG: First item HTML: {str(thread_items[0])[:300]}...")
+        
+        # Extract thread items with their reply counts for sorting
+        thread_data = []
+        for item in thread_items:
+            # Try different ways to find the title link - focus on thread links, not user links
+            title_link = None
+            
+            # Look for the main thread link
+            main_cell = item.find("div", class_="structItem-cell--main")
+            if main_cell:
+                # Find the thread title link
+                title_link = main_cell.find("a", class_="fauxBlockLink-link")
+                if not title_link:
+                    title_link = main_cell.find("a", class_="structItem-title")
+                if not title_link:
+                    # Look for any link that contains /t/ (thread pattern)
+                    all_links = main_cell.find_all("a", href=True)
+                    for link in all_links:
+                        href = link.get("href", "")
+                        if "/t/" in href and not href.startswith("/u/"):
+                            title_link = link
+                            break
+            
+            if title_link:
+                thread_url = "https://voz.vn" + title_link.get("href")
+                print(f"DEBUG: Checking thread URL: {thread_url}")
+                print(f"DEBUG: Is in processed_urls? {thread_url in processed_urls}")
+                
+                # Get reply count
+                reply_count = 0
+                meta_cell = item.find("div", class_="structItem-cell--meta")
+                if meta_cell:
+                    # Look for reply count in various formats
+                    reply_text = meta_cell.get_text()
+                    # Try to extract number from text like "Replies: 123" or "123 replies"
+                    import re
+                    reply_match = re.search(r'(\d+)', reply_text)
+                    if reply_match:
+                        reply_count = int(reply_match.group(1))
+                
+                thread_data.append({
+                    'item': item,
+                    'url': thread_url,
+                    'reply_count': reply_count,
+                    'is_processed': thread_url in processed_urls
+                })
+            else:
+                print(f"DEBUG: Could not find title link in item")
+                # Debug: print all links in this item
+                all_links = item.find_all("a", href=True)
+                for link in all_links:
+                    href = link.get("href", "")
+                    print(f"DEBUG: Found link: {href}")
+        
+        # Sort by reply count (descending)
+        thread_data.sort(key=lambda x: x['reply_count'], reverse=True)
+        
+        # Clear the original list and add sorted items
+        list_threads.clear()
+        for thread_info in thread_data:
+            item = thread_info['item']
+            
+            # Mark as processed if needed
+            if thread_info['is_processed']:
+                print(f"DEBUG: Marking as processed: {thread_info['url']}")
+                # Add processed indicator
+                processed_indicator = soup.new_tag("div")
+                processed_indicator["style"] = "background: #4caf50; color: white; padding: 2px 6px; border-radius: 3px; font-size: 10px; margin-top: 4px; display: inline-block;"
+                processed_indicator.string = "✓ Đã xử lý"
+                
+                # Add to the title area
+                title_cell = item.find("div", class_="structItem-cell--main")
+                if title_cell:
+                    title_cell.append(processed_indicator)
+                
+                # Also fade the entire item
+                if "style" in item.attrs:
+                    item["style"] += "; opacity: 0.6;"
+                else:
+                    item["style"] = "opacity: 0.6;"
+            
+            # Add reply count indicator
+            reply_indicator = soup.new_tag("div")
+            reply_indicator["style"] = "background: #007bff; color: white; padding: 2px 6px; border-radius: 3px; font-size: 10px; margin-top: 4px; display: inline-block; margin-left: 8px;"
+            reply_indicator.string = f"💬 {thread_info['reply_count']}"
+            
+            # Add to the title area
+            title_cell = item.find("div", class_="structItem-cell--main")
+            if title_cell:
+                title_cell.append(reply_indicator)
+            
+            list_threads.append(item)
+        
+        return str(list_threads)
+    return "" 

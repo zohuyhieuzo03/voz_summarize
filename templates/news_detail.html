@@ -83,6 +83,209 @@
         {{ news.ai_analysis.analysis if news.ai_analysis else 'Chưa có phân tích.' }}
     </div>
     <p style="margin-top:2em;"><a href="/">← Quay lại danh sách</a></p>
+    
+    <!-- Reading Time Tracker -->
+    <div id="reading-time" style="position: fixed; bottom: 20px; right: 20px; background: #333; color: white; padding: 12px 16px; border-radius: 8px; font-size: 14px; z-index: 1000; display: none;" data-news-id="{{ news.id }}">
+        <div>⏱️ Thời gian đọc: <span id="reading-seconds">0s</span></div>
+        <div style="font-size: 12px; margin-top: 4px; opacity: 0.8;" id="reading-status">Đang đọc...</div>
+        <div style="font-size: 11px; margin-top: 4px; opacity: 0.7;" id="total-time">Tổng: 0s</div>
+    </div>
 </div>
+
+<script>
+const newsId = parseInt(document.getElementById('reading-time').getAttribute('data-news-id'));
+let readingSessionId = null;
+let startTime = null;
+let totalSeconds = 0;
+let previousTotalSeconds = 0;
+let todayTotalSeconds = 0;
+let isReading = false;
+let isPageVisible = true;
+let isPageFocused = true;
+
+// Get total reading time from previous sessions
+async function getTotalReadingTime() {
+    try {
+        const response = await fetch(`/api/reading/total/${newsId}`);
+        const data = await response.json();
+        previousTotalSeconds = data.total_seconds;
+        
+        console.log('Loaded previous total time for this article:', data.total_seconds, 'seconds');
+        return data.total_seconds;
+    } catch (error) {
+        console.error('Error getting total reading time:', error);
+        return 0;
+    }
+}
+
+// Get today's total reading time
+async function getTodayTotalReadingTime() {
+    try {
+        const response = await fetch('/api/today-stats');
+        const data = await response.json();
+        
+        todayTotalSeconds = data.total_reading_seconds;
+        
+        // Format and display today's total time
+        let totalTimeText = '';
+        if (data.total_reading_hours > 0) {
+            totalTimeText = `Tổng hôm nay: ${data.total_reading_hours}g ${data.total_reading_minutes % 60}p`;
+        } else if (data.total_reading_minutes > 0) {
+            totalTimeText = `Tổng hôm nay: ${data.total_reading_minutes}p`;
+        } else {
+            totalTimeText = `Tổng hôm nay: ${data.total_reading_seconds}s`;
+        }
+        document.getElementById('total-time').textContent = totalTimeText;
+        
+        console.log('Loaded today total reading time:', data.total_reading_seconds, 'seconds');
+        return data.total_reading_seconds;
+    } catch (error) {
+        console.error('Error getting today total reading time:', error);
+        return 0;
+    }
+}
+
+// Start reading session when page loads
+async function startReadingSession() {
+    try {
+        // Get previous total reading time for this article first
+        await getTotalReadingTime();
+        
+        // Get today's total reading time
+        await getTodayTotalReadingTime();
+        
+        const response = await fetch('/api/reading/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ news_id: newsId })
+        });
+        const data = await response.json();
+        if (data.session_id) {
+            readingSessionId = data.session_id;
+            startTime = Date.now();
+            isReading = true;
+            document.getElementById('reading-time').style.display = 'block';
+            updateReadingTime();
+        }
+    } catch (error) {
+        console.error('Error starting reading session:', error);
+    }
+}
+
+// Update reading time display
+function updateReadingTime() {
+    if (!isReading) return;
+    
+    const now = Date.now();
+    if (isPageVisible && isPageFocused) {
+        totalSeconds = Math.floor((now - startTime) / 1000);
+    }
+    
+    // Display current session time + previous total time
+    const currentSessionSeconds = totalSeconds;
+    const totalTimeSeconds = previousTotalSeconds + currentSessionSeconds;
+    
+    // Format current session time for display (current session only)
+    let currentTimeText = '';
+    if (currentSessionSeconds >= 3600) {
+        const hours = Math.floor(currentSessionSeconds / 3600);
+        const minutes = Math.floor((currentSessionSeconds % 3600) / 60);
+        currentTimeText = `${hours}g ${minutes}p`;
+    } else if (currentSessionSeconds >= 60) {
+        const minutes = Math.floor(currentSessionSeconds / 60);
+        const seconds = currentSessionSeconds % 60;
+        currentTimeText = `${minutes}p ${seconds}s`;
+    } else {
+        currentTimeText = `${currentSessionSeconds}s`;
+    }
+    
+    document.getElementById('reading-seconds').textContent = currentTimeText;
+    document.getElementById('reading-status').textContent = 
+        isPageVisible && isPageFocused ? 'Đang đọc...' : 'Tạm dừng';
+    
+    // Update today's total reading time in real-time
+    const currentTodayTotal = todayTotalSeconds + (isPageVisible && isPageFocused ? currentSessionSeconds : 0);
+    let todayTotalText = '';
+    if (currentTodayTotal >= 3600) {
+        const hours = Math.floor(currentTodayTotal / 3600);
+        const minutes = Math.floor((currentTodayTotal % 3600) / 60);
+        todayTotalText = `Tổng hôm nay: ${hours}g ${minutes}p`;
+    } else if (currentTodayTotal >= 60) {
+        const minutes = Math.floor(currentTodayTotal / 60);
+        const seconds = currentTodayTotal % 60;
+        todayTotalText = `Tổng hôm nay: ${minutes}p ${seconds}s`;
+    } else {
+        todayTotalText = `Tổng hôm nay: ${currentTodayTotal}s`;
+    }
+    document.getElementById('total-time').textContent = todayTotalText;
+    
+    requestAnimationFrame(updateReadingTime);
+}
+
+// Stop reading session
+async function stopReadingSession() {
+    if (!readingSessionId) return;
+    
+    try {
+        await fetch('/api/reading/stop', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                session_id: readingSessionId,
+                total_seconds: totalSeconds
+            })
+        });
+        
+        // Update today's total reading time after stopping session
+        todayTotalSeconds += totalSeconds;
+    } catch (error) {
+        console.error('Error stopping reading session:', error);
+    }
+}
+
+// Page visibility change
+document.addEventListener('visibilitychange', () => {
+    isPageVisible = !document.hidden;
+    if (!isPageVisible) {
+        // Page is hidden, pause reading
+        document.getElementById('reading-status').textContent = 'Tạm dừng';
+    } else if (isPageFocused) {
+        // Page is visible and focused, resume reading
+        document.getElementById('reading-status').textContent = 'Đang đọc...';
+    }
+});
+
+// Window focus/blur
+window.addEventListener('focus', () => {
+    isPageFocused = true;
+    if (isPageVisible) {
+        document.getElementById('reading-status').textContent = 'Đang đọc...';
+    }
+});
+
+window.addEventListener('blur', () => {
+    isPageFocused = false;
+    document.getElementById('reading-status').textContent = 'Tạm dừng';
+});
+
+// Before page unload, stop the session
+window.addEventListener('beforeunload', stopReadingSession);
+
+// Update total reading time periodically
+async function updateTotalReadingTime() {
+    try {
+        // Update today's total reading time
+        await getTodayTotalReadingTime();
+    } catch (error) {
+        console.error('Error updating total reading time:', error);
+    }
+}
+
+// Update total reading time every 30 seconds
+setInterval(updateTotalReadingTime, 30000);
+
+// Start reading session when page loads
+document.addEventListener('DOMContentLoaded', startReadingSession);
+</script>
 </body>
 </html> 
