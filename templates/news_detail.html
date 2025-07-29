@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>{{ news.title or news.url }}</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
         body { font-family: Arial, sans-serif; margin: 40px; background: #f8f9fa; color: #222; }
         .container { max-width: 900px; margin: auto; background: #fff; padding: 32px 40px 40px 40px; border-radius: 12px; box-shadow: 0 2px 12px #0001; }
@@ -46,6 +47,74 @@
             font-weight: bold;
             margin-bottom: 0.3em;
         }
+        
+        /* Markdown styling for AI responses */
+        .markdown-content {
+            line-height: 1.6;
+            color: #333;
+        }
+        .markdown-content h1, .markdown-content h2, .markdown-content h3, 
+        .markdown-content h4, .markdown-content h5, .markdown-content h6 {
+            margin-top: 1.5em;
+            margin-bottom: 0.5em;
+            color: #2c3e50;
+        }
+        .markdown-content h1 { font-size: 1.8em; border-bottom: 2px solid #eee; padding-bottom: 0.3em; }
+        .markdown-content h2 { font-size: 1.5em; border-bottom: 1px solid #eee; padding-bottom: 0.2em; }
+        .markdown-content h3 { font-size: 1.3em; }
+        .markdown-content p { margin-bottom: 1em; }
+        .markdown-content ul, .markdown-content ol { 
+            margin-bottom: 1em; 
+            padding-left: 2em; 
+        }
+        .markdown-content li { margin-bottom: 0.3em; }
+        .markdown-content blockquote {
+            border-left: 4px solid #007bff;
+            margin: 1em 0;
+            padding: 0.5em 1em;
+            background: #f8f9fa;
+            border-radius: 0 4px 4px 0;
+        }
+        .markdown-content code {
+            background: #f1f3f4;
+            padding: 0.2em 0.4em;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+        .markdown-content pre {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 6px;
+            padding: 1em;
+            overflow-x: auto;
+            margin: 1em 0;
+        }
+        .markdown-content pre code {
+            background: none;
+            padding: 0;
+        }
+        .markdown-content strong { font-weight: bold; }
+        .markdown-content em { font-style: italic; }
+        .markdown-content table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 1em 0;
+        }
+        .markdown-content th, .markdown-content td {
+            border: 1px solid #ddd;
+            padding: 0.5em;
+            text-align: left;
+        }
+        .markdown-content th {
+            background: #f8f9fa;
+            font-weight: bold;
+        }
+        .markdown-content hr {
+            border: none;
+            border-top: 1px solid #eee;
+            margin: 2em 0;
+        }
     </style>
 </head>
 <body>
@@ -55,6 +124,8 @@
     <form method="post" action="{{ url_for('delete_news', news_id=news.id) }}" style="display:inline" onsubmit="return confirm('Bạn có chắc chắn muốn xoá bài báo này?');">
         <button type="submit" style="background:#f44336;color:#fff;border:none;padding:8px 18px;border-radius:6px;cursor:pointer;font-weight:bold;margin-bottom:16px;">Xoá bài báo</button>
     </form>
+    <button id="update-comments-btn" style="background:#2196f3;color:#fff;border:none;padding:8px 18px;border-radius:6px;cursor:pointer;font-weight:bold;margin-bottom:16px;margin-left:10px;">Tiếp tục xử lý comment mới</button>
+    <span id="update-comments-status" style="margin-left:12px;color:#2196f3;font-weight:bold;display:none;">Đang xử lý...</span>
 
     <h2>Nội dung bài báo</h2>
     <div class="content">{{ news.content|safe }}</div>
@@ -79,9 +150,47 @@
     </div>
 
     <h2>AI Phân tích</h2>
-    <div class="ai-analysis">
-        {{ news.ai_analysis.analysis if news.ai_analysis else 'Chưa có phân tích.' }}
+    <div class="ai-analysis markdown-content">
+        {% if news.ai_analysis %}
+            <div id="ai-analysis-content">{{ news.ai_analysis.analysis }}</div>
+        {% else %}
+            Chưa có phân tích.
+        {% endif %}
     </div>
+
+    <h2>AI Chat - Hỏi đáp về thread này</h2>
+    <div class="ai-chat-container" style="background: #f8f9fa; border-radius: 8px; padding: 1.5em; margin-bottom: 2em;">
+        <div style="margin-bottom: 1em; padding: 8px 12px; background: #e3f2fd; border-radius: 6px; border-left: 4px solid #2196f3;">
+            <small style="color: #1976d2; font-weight: bold;">
+                💡 AI sẽ phân tích tất cả comments trong thread này để trả lời câu hỏi của bạn
+            </small>
+        </div>
+        <div class="chat-form">
+            <textarea id="question-input" placeholder="Đặt câu hỏi về thread này... Ví dụ: 'Những sản phẩm nào được khuyến nghị trong thread này?'" 
+                      style="width: 100%; height: 80px; padding: 12px; border: 1px solid #ddd; border-radius: 6px; font-family: inherit; resize: vertical; margin-bottom: 12px;"></textarea>
+            <button id="ask-btn" style="background: #28a745; color: #fff; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: bold;">
+                Gửi câu hỏi
+            </button>
+            <span id="chat-status" style="margin-left: 12px; color: #28a745; font-weight: bold; display: none;">Đang xử lý...</span>
+        </div>
+        
+        <div id="chat-history" style="margin-top: 2em;">
+            {% for chat in news.ai_chats %}
+            <div class="chat-item" style="background: #fff; border-radius: 8px; padding: 1.2em; margin-bottom: 1em; border-left: 4px solid #28a745;">
+                <div class="question" style="font-weight: bold; color: #333; margin-bottom: 0.8em;">
+                    <span style="color: #28a745;">Q:</span> {{ chat.question }}
+                </div>
+                <div class="answer markdown-content" style="color: #555;">
+                    <span style="color: #007bff;">A:</span> <span class="answer-content">{{ chat.answer }}</span>
+                </div>
+                <div class="chat-meta" style="font-size: 0.85em; color: #888; margin-top: 0.8em;">
+                    {{ chat.created_at.strftime('%d/%m/%Y %H:%M') }} • Phân tích tất cả comments
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
     <p style="margin-top:2em;"><a href="/">← Quay lại danh sách</a></p>
     
     <!-- Reading Time Tracker -->
@@ -93,6 +202,34 @@
 </div>
 
 <script>
+// Configure marked.js for markdown rendering
+marked.setOptions({
+    breaks: true,
+    gfm: true,
+    sanitize: false
+});
+
+// Function to render markdown content
+function renderMarkdown(element) {
+    if (element && element.textContent) {
+        element.innerHTML = marked.parse(element.textContent);
+    }
+}
+
+// Render markdown for existing AI analysis
+document.addEventListener('DOMContentLoaded', function() {
+    const aiAnalysisContent = document.getElementById('ai-analysis-content');
+    if (aiAnalysisContent) {
+        renderMarkdown(aiAnalysisContent);
+    }
+    
+    // Render markdown for existing chat answers
+    const answerContents = document.querySelectorAll('.answer-content');
+    answerContents.forEach(function(element) {
+        renderMarkdown(element);
+    });
+});
+
 const newsId = parseInt(document.getElementById('reading-time').getAttribute('data-news-id'));
 let readingSessionId = null;
 let startTime = null;
@@ -286,6 +423,115 @@ setInterval(updateTotalReadingTime, 30000);
 
 // Start reading session when page loads
 document.addEventListener('DOMContentLoaded', startReadingSession);
+
+// Nút cập nhật comment mới
+const updateBtn = document.getElementById('update-comments-btn');
+const updateStatus = document.getElementById('update-comments-status');
+if (updateBtn) {
+    updateBtn.addEventListener('click', async function() {
+        updateBtn.disabled = true;
+        updateStatus.style.display = 'inline';
+        updateStatus.textContent = 'Đang xử lý...';
+        try {
+            const response = await fetch(`/api/news/${newsId}/update_comments`, { method: 'POST' });
+            const data = await response.json();
+            if (data.success) {
+                updateStatus.textContent = 'Đã cập nhật comment mới!';
+                setTimeout(() => location.reload(), 1200);
+            } else {
+                updateStatus.textContent = 'Có lỗi xảy ra!';
+                updateBtn.disabled = false;
+            }
+        } catch (e) {
+            updateStatus.textContent = 'Có lỗi xảy ra!';
+            updateBtn.disabled = false;
+        }
+    });
+}
+
+// AI Chat functionality
+const questionInput = document.getElementById('question-input');
+const askBtn = document.getElementById('ask-btn');
+const chatStatus = document.getElementById('chat-status');
+const chatHistory = document.getElementById('chat-history');
+
+if (askBtn) {
+    askBtn.addEventListener('click', async function() {
+        const question = questionInput.value.trim();
+        if (!question) {
+            alert('Vui lòng nhập câu hỏi!');
+            return;
+        }
+        
+        askBtn.disabled = true;
+        chatStatus.style.display = 'inline';
+        chatStatus.textContent = 'Đang phân tích tất cả comments (có thể mất vài phút nếu có nhiều comments)...';
+        
+        try {
+            const response = await fetch(`/api/news/${newsId}/chat`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question: question })
+            });
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                // Add new chat item to the top
+                const chatItem = document.createElement('div');
+                chatItem.className = 'chat-item';
+                chatItem.style.cssText = 'background: #fff; border-radius: 8px; padding: 1.2em; margin-bottom: 1em; border-left: 4px solid #28a745;';
+                
+                const now = new Date();
+                const timeStr = now.toLocaleDateString('vi-VN') + ' ' + now.toLocaleTimeString('vi-VN', {hour: '2-digit', minute:'2-digit'});
+                
+                chatItem.innerHTML = `
+                    <div class="question" style="font-weight: bold; color: #333; margin-bottom: 0.8em;">
+                        <span style="color: #28a745;">Q:</span> ${question}
+                    </div>
+                    <div class="answer markdown-content" style="color: #555;">
+                        <span style="color: #007bff;">A:</span> <span class="answer-content">${data.answer}</span>
+                    </div>
+                    <div class="chat-meta" style="font-size: 0.85em; color: #888; margin-top: 0.8em;">
+                        ${timeStr} • Phân tích ${data.comment_count || 0} comments
+                    </div>
+                `;
+                
+                chatHistory.insertBefore(chatItem, chatHistory.firstChild);
+                
+                // Render markdown for the new answer
+                const newAnswerContent = chatItem.querySelector('.answer-content');
+                if (newAnswerContent) {
+                    renderMarkdown(newAnswerContent);
+                }
+                
+                // Clear input
+                questionInput.value = '';
+                chatStatus.textContent = 'Đã phân tích và trả lời!';
+                setTimeout(() => {
+                    chatStatus.style.display = 'none';
+                }, 2000);
+            } else {
+                chatStatus.textContent = 'Có lỗi xảy ra: ' + (data.error || 'Unknown error');
+            }
+        } catch (e) {
+            chatStatus.textContent = 'Có lỗi xảy ra!';
+            console.error('Chat error:', e);
+        } finally {
+            askBtn.disabled = false;
+        }
+    });
+}
+
+// Allow Enter key to submit question
+if (questionInput) {
+    questionInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && e.ctrlKey) {
+            e.preventDefault();
+            askBtn.click();
+        }
+    });
+}
 </script>
 </body>
 </html> 

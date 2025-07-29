@@ -3,7 +3,7 @@ from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 import os
 from flask_migrate import Migrate
-from voz_crawler import process_single_post, get_forum_threads
+from voz_crawler import process_single_post, get_forum_threads, get_top_comments, analyze_content_with_gemini
 import threading
 import uuid
 
@@ -20,8 +20,9 @@ class News(db.Model):
     title = db.Column(db.String(512))
     content = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    comments = db.relationship('Comment', backref='news', lazy=True)
-    ai_analysis = db.relationship('AIAnalysis', backref='news', uselist=False)
+    comments = db.relationship('Comment', backref='news', lazy=True, cascade="all, delete-orphan")
+    ai_analysis = db.relationship('AIAnalysis', backref='news', uselist=False, cascade="all, delete-orphan")
+    ai_chats = db.relationship('AIChat', backref='news', lazy=True, order_by='AIChat.created_at.desc()', cascade="all, delete-orphan")
 
 class Comment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -36,6 +37,13 @@ class AIAnalysis(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     news_id = db.Column(db.Integer, db.ForeignKey('news.id'), nullable=False)
     analysis = db.Column(db.Text)
+
+class AIChat(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    news_id = db.Column(db.Integer, db.ForeignKey('news.id'), nullable=False)
+    question = db.Column(db.Text, nullable=False)
+    answer = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class ReadingSession(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -55,16 +63,15 @@ def index():
 @app.route('/news/<int:news_id>')
 def news_detail(news_id):
     news = News.query.get_or_404(news_id)
-    # Sort comments by date ascending (oldest first)
-    news.comments = sorted(news.comments, key=lambda c: getattr(c, 'created_at', None) or 0)
+    # Import function to get display comments
+    from voz_crawler import get_display_comments
+    # Get comments for display according to the old rule
+    news.comments = get_display_comments(db, Comment, news_id)
     return render_template('news_detail.html', news=news)
 
 @app.route('/news/<int:news_id>/delete', methods=['POST'])
 def delete_news(news_id):
     news = News.query.get_or_404(news_id)
-    # Xoá toàn bộ comment và AIAnalysis liên quan
-    Comment.query.filter_by(news_id=news.id).delete()
-    AIAnalysis.query.filter_by(news_id=news.id).delete()
     db.session.delete(news)
     db.session.commit()
     flash('Đã xoá bài báo thành công!', 'success')
@@ -191,7 +198,86 @@ def api_reading_total(news_id):
         'total_hours': (total_seconds // 60) // 60
     })
 
+@app.route('/api/news/<int:news_id>/update_comments', methods=['POST'])
+def update_comments(news_id):
+    try:
+        news = News.query.get_or_404(news_id)
+        # Crawl lại comment mới từ VOZ
+        news_title, news_content, top_comments = get_top_comments(news.url, num_comments=5)
+        # Lấy các link comment đã có trong DB
+        existing_links = set(c.link for c in Comment.query.filter_by(news_id=news.id).all())
+        new_comments = [c for c in top_comments if c['link'] not in existing_links]
+        # Nếu có comment mới thì thêm vào DB
+        for c in new_comments:
+            comment = Comment(
+                news_id=news.id,
+                reacts=c['reacts'],
+                text=c['text'],
+                link=c['link'],
+                is_positive=c.get('is_positive'),
+                created_at=c.get('date') if c.get('date') else None
+            )
+            db.session.add(comment)
+        db.session.commit()
+        # Nếu có comment mới, cập nhật lại AIAnalysis
+        # if new_comments:
+        #     all_comments = Comment.query.filter_by(news_id=news.id).all()
+        #     ai_text = analyze_content_with_gemini(news.content, all_comments)
+        #     ai = AIAnalysis.query.filter_by(news_id=news.id).first()
+        #     if ai:
+        #         ai.analysis = ai_text
+        #     else:
+        #         ai = AIAnalysis(news_id=news.id, analysis=ai_text)
+        #         db.session.add(ai)
+        #     db.session.commit()
+        return jsonify({'success': True, 'new_comments': len(new_comments)})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/news/<int:news_id>/chat', methods=['POST'])
+def ai_chat(news_id):
+    try:
+        news = News.query.get_or_404(news_id)
+        question = request.json.get('question')
+        
+        if not question:
+            return jsonify({'success': False, 'error': 'Question is required'}), 400
+        
+        # Import function from voz_crawler
+        from voz_crawler import chat_with_ai_about_thread
+        
+        # Get AI response with all comments
+        answer, comment_count = chat_with_ai_about_thread(
+            news.title, 
+            news.content, 
+            news.comments, 
+            question,
+            url=news.url,
+            db=db,
+            Comment=Comment,
+            news_id=news.id
+        )
+        
+        # Save to database
+        chat = AIChat(
+            news_id=news.id,
+            question=question,
+            answer=answer
+        )
+        db.session.add(chat)
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'answer': answer,
+            'chat_id': chat.id,
+            'comment_count': comment_count
+        })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
-    app.run(debug=True) 
+    app.run(debug=True, host='0.0.0.0', port=8080) 

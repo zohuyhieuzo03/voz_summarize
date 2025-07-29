@@ -295,8 +295,10 @@
             if (resp.ok) {
               const data = await resp.json();
               if (data.task_id) {
+                // Lưu task_id vào localStorage theo url bài báo
+                localStorage.setItem('process_task_id_' + url, data.task_id);
                 // Start polling progress for this specific link
-                pollLinkProgress(data.task_id, progressContainer, link);
+                pollLinkProgress(data.task_id, progressContainer, link, url);
               } else {
                 link.textContent = 'Lỗi!';
                 link.style.color = '#f44336';
@@ -309,7 +311,7 @@
               link.style.pointerEvents = 'auto';
               progressContainer.remove();
             }
-          } catch (error) {
+          } catch (e) {
             link.textContent = 'Lỗi!';
             link.style.color = '#f44336';
             link.style.pointerEvents = 'auto';
@@ -319,10 +321,14 @@
       });
     }
     
-    function pollLinkProgress(task_id, progressContainer, link) {
+    function pollLinkProgress(task_id, progressContainer, link, url) {
         const progressBar = progressContainer.querySelector('.link-progress-bar');
         const progressText = progressContainer.querySelector('.link-progress-text');
-        
+        // Nếu task_id không truyền vào, thử lấy lại từ localStorage
+        if (!task_id && url) {
+            task_id = localStorage.getItem('process_task_id_' + url);
+            if (!task_id) return;
+        }
         fetch('/progress/' + task_id)
             .then(res => res.json())
             .then(data => {
@@ -332,28 +338,26 @@
                     link.style.color = '#f44336';
                     link.style.pointerEvents = 'auto';
                     progressContainer.remove();
+                    // Xoá task_id khỏi localStorage nếu có lỗi
+                    if (url) localStorage.removeItem('process_task_id_' + url);
                     return;
                 }
-                
                 var percent = data.total > 0 ? Math.round(data.current / data.total * 100) : 0;
                 progressBar.style.width = percent + '%';
                 progressText.innerText = `${data.current}/${data.total} trang`;
-                
                 if (data.done) {
                     progressText.innerText = 'Hoàn tất!';
                     link.textContent = 'Đã xử lý!';
                     link.style.color = '#4caf50';
-                    // Fade out the entire thread item
                     link.closest('.structItem').style.opacity = '0.5';
-                    // Remove progress bar after a delay
                     setTimeout(() => {
                         progressContainer.remove();
                     }, 2000);
-                    
-                    // Refresh the processed list on the right
+                    // Xoá task_id khỏi localStorage khi xong
+                    if (url) localStorage.removeItem('process_task_id_' + url);
                     refreshProcessedList();
                 } else {
-                    setTimeout(() => pollLinkProgress(task_id, progressContainer, link), 500);
+                    setTimeout(() => pollLinkProgress(task_id, progressContainer, link, url), 500);
                 }
             })
             .catch(() => {
@@ -362,6 +366,7 @@
                 link.style.color = '#f44336';
                 link.style.pointerEvents = 'auto';
                 progressContainer.remove();
+                if (url) localStorage.removeItem('process_task_id_' + url);
             });
     }
     

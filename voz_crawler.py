@@ -134,7 +134,35 @@ def get_top_comments(url, num_comments=5, progress_callback=None):
     return news_title, news_content, top_comments
 
 def analyze_content_with_gemini(news_content, comments):
-    prompt = """Hãy phân tích nội dung của bài báo dưới đây và kết hợp với các bình luận của độc giả để đưa ra một bản tóm tắt và phân tích đa chiều.\n\n    Tóm tắt ý chính của bài báo (nội dung, lập luận, kết luận).\n    \n    Tóm tắt các bình luận của độc giả và đưa ra một nhận định tổng quan về chủ đề đang được thảo luận.\n\n    Dưới đây là nội dung bài báo và bình luận:\n\n    Nội dung bài báo:\n    {news_content}\n\n    Các bình luận:\n    {comments}\n    """
+    prompt = """Hãy phân tích nội dung của bài báo dưới đây và kết hợp với các bình luận của độc giả để đưa ra một bản tóm tắt và phân tích đa chiều.
+
+**Yêu cầu:**
+- Sử dụng định dạng Markdown để trình bày
+- Tạo các tiêu đề rõ ràng với ##
+- Sử dụng danh sách có dấu đầu dòng (-) cho các điểm chính
+- Sử dụng **bold** cho các từ khóa quan trọng
+- Sử dụng > cho các trích dẫn đặc biệt
+
+**Cấu trúc phân tích:**
+
+## 📰 Tóm tắt bài báo
+- Nội dung chính
+- Lập luận và kết luận
+
+## 💬 Phân tích bình luận cộng đồng
+- Tổng quan các ý kiến
+- Nhận định về chủ đề
+
+## 🔍 Kết luận tổng quan
+- Đánh giá tổng thể về chủ đề
+
+Dưới đây là nội dung bài báo và bình luận:
+
+**Nội dung bài báo:**
+{news_content}
+
+**Các bình luận:**
+{comments}"""
     try:
         response = model.generate_content(prompt.format(
             news_content=news_content,
@@ -143,6 +171,288 @@ def analyze_content_with_gemini(news_content, comments):
         return response.text
     except Exception as e:
         return f"Error analyzing content with Gemini: {str(e)}"
+
+def get_comments_for_ai_analysis(url, db, Comment, news_id):
+    """
+    Lấy tất cả comments để phân tích AI (không giới hạn số lượng)
+    """
+    # Lấy tất cả comments hiện có trong database
+    existing_comments = Comment.query.filter_by(news_id=news_id).all()
+    
+    # Luôn crawl thêm comments để đảm bảo có đầy đủ
+    try:
+        # Crawl tất cả comments có thể (không giới hạn số lượng)
+        news_title, news_content, additional_comments = get_top_comments(url, num_comments=10000)
+        
+        # Lấy các link comment đã có trong DB
+        existing_links = set(c.link for c in existing_comments)
+        
+        # Thêm comments mới vào database
+        for c in additional_comments:
+            if c['link'] not in existing_links:
+                comment = Comment(
+                    news_id=news_id,
+                    reacts=c['reacts'],
+                    text=c['text'],
+                    link=c['link'],
+                    is_positive=c.get('is_positive'),
+                    created_at=c.get('date') if c.get('date') else None
+                )
+                db.session.add(comment)
+        
+        db.session.commit()
+        
+        # Lấy lại tất cả comments sau khi thêm mới
+        all_comments = Comment.query.filter_by(news_id=news_id).all()
+        return all_comments
+    except Exception as e:
+        print(f"Error crawling additional comments for AI analysis: {e}")
+        return existing_comments
+
+def get_display_comments(db, Comment, news_id):
+    """
+    Lấy comments để hiển thị theo rule cũ:
+    - Top 5 comments theo react, sort theo date
+    - Nếu có >5 comments với >20 react thì lấy hết
+    """
+    # Lấy tất cả comments từ database
+    all_comments = Comment.query.filter_by(news_id=news_id).all()
+    
+    # Lọc comments có >20 react
+    high_react_comments = [c for c in all_comments if c.reacts and c.reacts > 20]
+    
+    # Nếu có >5 comments với >20 react, lấy tất cả comments có >20 react
+    if len(high_react_comments) > 5:
+        # Sort theo date (oldest first)
+        display_comments = sorted(high_react_comments, key=lambda c: c.created_at or datetime.min)
+    else:
+        # Lấy top 5 comments theo react, sort theo date
+        sorted_comments = sorted(all_comments, key=lambda c: (c.reacts or 0, c.created_at or datetime.min), reverse=True)
+        display_comments = sorted_comments[:5]
+        # Sort lại theo date (oldest first)
+        display_comments = sorted(display_comments, key=lambda c: c.created_at or datetime.min)
+    
+    return display_comments
+
+def truncate_text(text, max_length=8000):
+    """
+    Cắt text nếu quá dài, giữ lại phần đầu và cuối
+    """
+    if len(text) <= max_length:
+        return text
+    
+    # Cắt ở giữa, giữ lại 70% đầu và 30% cuối
+    first_part = int(max_length * 0.7)
+    last_part = max_length - first_part
+    
+    return text[:first_part] + "\n\n[... nội dung bị cắt ...]\n\n" + text[-last_part:]
+
+def chunk_comments_for_ai(comments, max_comments_per_chunk=200, max_chars_per_comment=2000):
+    """
+    Chia comments thành các chunk nhỏ hơn để xử lý
+    """
+    chunks = []
+    current_chunk = []
+    current_length = 0
+    
+    for i, comment in enumerate(comments):
+        # Xử lý cả comment object và dict
+        if hasattr(comment, 'reacts'):
+            reacts = comment.reacts
+            text = comment.text
+            link = comment.link
+        else:
+            reacts = comment.get('reacts', 0)
+            text = comment.get('text', '')
+            link = comment.get('link', '')
+        
+        # Cắt text comment nếu quá dài
+        if len(text) > max_chars_per_comment:
+            text = truncate_text(text, max_chars_per_comment)
+        
+        comment_text = f"\nBình luận {i+1} ({reacts} reacts) - Link: {link}:\n{text}\n"
+        comment_length = len(comment_text)
+        
+        # Nếu thêm comment này vượt quá giới hạn hoặc đã đủ số lượng
+        if (current_length + comment_length > 15000) or len(current_chunk) >= max_comments_per_chunk:
+            if current_chunk:  # Lưu chunk hiện tại
+                chunks.append(current_chunk)
+                current_chunk = []
+                current_length = 0
+        
+        current_chunk.append(comment)
+        current_length += comment_length
+    
+    # Thêm chunk cuối cùng
+    if current_chunk:
+        chunks.append(current_chunk)
+    
+    return chunks
+
+def chat_with_ai_about_thread(title, content, comments, question, url=None, db=None, Comment=None, news_id=None):
+    """
+    Chat với AI về một thread cụ thể dựa trên title, content và comments
+    """
+    # Nếu có thông tin database, lấy comments để phân tích AI
+    if url and db and Comment and news_id:
+        ai_comments = get_comments_for_ai_analysis(url, db, Comment, news_id)
+        comments = ai_comments
+    
+    # Cắt content nếu quá dài
+    content = truncate_text(content, 5000)
+    
+    # Chia comments thành chunks
+    comment_chunks = chunk_comments_for_ai(comments)
+    
+    # Nếu chỉ có 1 chunk hoặc ít comments, xử lý bình thường
+    if len(comment_chunks) <= 1:
+        thread_context = f"""
+        Tiêu đề thread: {title}
+        
+        Nội dung chính:
+        {content}
+        
+        Các bình luận từ cộng đồng (tổng cộng {len(comments)} bình luận):
+        """
+        
+        # Thêm comments vào context với link
+        for i, comment in enumerate(comments):
+            if hasattr(comment, 'reacts'):
+                reacts = comment.reacts
+                text = comment.text
+                link = comment.link
+            else:
+                reacts = comment.get('reacts', 0)
+                text = comment.get('text', '')
+                link = comment.get('link', '')
+            
+            # Cắt text comment nếu quá dài
+            if len(text) > 2000:
+                text = truncate_text(text, 2000)
+            
+            thread_context += f"\nBình luận {i+1} ({reacts} reacts) - Link: {link}:\n{text}\n"
+        
+        return process_single_chunk(title, content, thread_context, question, len(comments))
+    
+    # Nếu có nhiều chunks, xử lý từng chunk và tổng hợp
+    else:
+        return process_multiple_chunks(title, content, comment_chunks, question, len(comments))
+
+def process_single_chunk(title, content, thread_context, question, total_comments):
+    """
+    Xử lý một chunk duy nhất
+    """
+    prompt = f"""
+    Bạn là một AI assistant chuyên phân tích và trả lời câu hỏi về các thread trên diễn đàn VOZ.
+    
+    Dưới đây là thông tin về một thread cụ thể:
+    
+    {thread_context}
+    
+    Câu hỏi của người dùng: {question}
+    
+    **Yêu cầu trả lời:**
+    - Sử dụng định dạng Markdown để trình bày
+    - Tạo các tiêu đề rõ ràng với ##
+    - Sử dụng danh sách có dấu đầu dòng (-) cho các điểm chính
+    - Sử dụng **bold** cho các từ khóa quan trọng
+    - Sử dụng > cho các trích dẫn từ bình luận cụ thể
+    - Sử dụng `code` cho các thuật ngữ kỹ thuật
+    - **Khi trích dẫn comment:** Sử dụng format: > [Nội dung comment](Link comment)
+    
+    Hãy trả lời câu hỏi dựa trên thông tin từ thread trên. Nếu câu hỏi liên quan đến:
+    - **Sản phẩm/dịch vụ:** Hãy phân tích các ý kiến, đánh giá, khuyến nghị từ cộng đồng
+    - **Sự kiện/tin tức:** Hãy tóm tắt và phân tích các góc nhìn khác nhau
+    - **Kinh nghiệm/cách làm:** Hãy tổng hợp các chia sẻ thực tế từ người dùng
+    - **So sánh/lựa chọn:** Hãy đưa ra phân tích dựa trên các ý kiến trong thread
+    
+    Trả lời bằng tiếng Việt, rõ ràng và có cấu trúc. Nếu có thể, hãy trích dẫn các bình luận cụ thể để minh họa.
+    """
+    
+    try:
+        response = model.generate_content(prompt)
+        return response.text, total_comments
+    except Exception as e:
+        return f"Lỗi khi xử lý câu hỏi: {str(e)}", 0
+
+def process_multiple_chunks(title, content, comment_chunks, question, total_comments):
+    """
+    Xử lý nhiều chunks và tổng hợp kết quả
+    """
+    try:
+        # Xử lý từng chunk
+        chunk_analyses = []
+        
+        for i, chunk in enumerate(comment_chunks):
+            chunk_context = f"""
+            Tiêu đề thread: {title}
+            
+            Nội dung chính:
+            {content}
+            
+            Phần bình luận {i+1}/{len(comment_chunks)} (từ comment {i*50+1} đến {i*50+len(chunk)}):
+            """
+            
+            # Thêm comments của chunk này
+            for j, comment in enumerate(chunk):
+                if hasattr(comment, 'reacts'):
+                    reacts = comment.reacts
+                    text = comment.text
+                    link = comment.link
+                else:
+                    reacts = comment.get('reacts', 0)
+                    text = comment.get('text', '')
+                    link = comment.get('link', '')
+                
+                # Cắt text comment nếu quá dài
+                if len(text) > 2000:
+                    text = truncate_text(text, 2000)
+                
+                chunk_context += f"\nBình luận {i*200+j+1} ({reacts} reacts) - Link: {link}:\n{text}\n"
+            
+            # Phân tích chunk này
+            chunk_prompt = f"""
+            Bạn là một AI assistant chuyên phân tích và trả lời câu hỏi về các thread trên diễn đàn VOZ.
+            
+            {chunk_context}
+            
+            Câu hỏi của người dùng: {question}
+            
+            Hãy phân tích phần bình luận này và đưa ra những điểm chính liên quan đến câu hỏi.
+            Trả lời ngắn gọn, tập trung vào những thông tin quan trọng nhất.
+            """
+            
+            response = model.generate_content(chunk_prompt)
+            chunk_analyses.append(response.text)
+        
+        # Tổng hợp kết quả từ tất cả chunks
+        summary_prompt = f"""
+        Bạn là một AI assistant chuyên tổng hợp và phân tích thông tin.
+        
+        Dưới đây là các phân tích từ {len(comment_chunks)} phần khác nhau của một thread VOZ:
+        
+        {chr(10).join([f"**Phần {i+1}:**{chr(10)}{analysis}" for i, analysis in enumerate(chunk_analyses)])}
+        
+        Câu hỏi của người dùng: {question}
+        
+        **Yêu cầu:**
+        - Tổng hợp tất cả thông tin trên thành một câu trả lời hoàn chỉnh
+        - Sử dụng định dạng Markdown để trình bày
+        - Tạo các tiêu đề rõ ràng với ##
+        - Sử dụng danh sách có dấu đầu dòng (-) cho các điểm chính
+        - Sử dụng **bold** cho các từ khóa quan trọng
+        - Sử dụng > cho các trích dẫn từ bình luận cụ thể
+        - Sử dụng `code` cho các thuật ngữ kỹ thuật
+        - **Khi trích dẫn comment:** Sử dụng format: > [Nội dung comment](Link comment)
+        
+        Trả lời bằng tiếng Việt, rõ ràng và có cấu trúc. Tổng hợp thông tin từ tất cả các phần để đưa ra câu trả lời toàn diện.
+        """
+        
+        final_response = model.generate_content(summary_prompt)
+        return final_response.text, total_comments
+        
+    except Exception as e:
+        return f"Lỗi khi xử lý câu hỏi: {str(e)}", 0
 
 def process_single_post(url, db, News, Comment, AIAnalysis, flask_app, progress_callback=None):
     try:
